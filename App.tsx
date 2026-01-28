@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Toaster, toast } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { FileSystemProvider, useFileSystem } from './contexts/FileSystemContext';
 import { AdminDashboard } from './components/AdminDashboard';
@@ -7,14 +8,12 @@ import { TransferManager } from './components/TransferManager';
 import { Icon } from './components/Icon';
 import { UserRole, FileNode } from './types';
 import { formatBytes } from './utils/format';
-import { Toast } from './components/Toast';
 
 const LoginScreen = () => {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,19 +22,12 @@ const LoginScreen = () => {
     } else {
       const msg = 'Email atau password belum terdaftar';
       setError(msg);
-      setToast({ message: msg, type: 'error' });
+      toast.error(msg);
     }
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4">
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => setToast(null)}
-        />
-      )}
       <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md">
         <div className="flex justify-center mb-6 text-brand-600 text-5xl">
           <Icon name="cloud" />
@@ -201,6 +193,7 @@ const MainLayout = () => {
 const App = () => {
   return (
     <AuthProvider>
+      <Toaster position="top-right" />
       <AppContent />
     </AuthProvider>
   );

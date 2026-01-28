@@ -1,4 +1,5 @@
 import React, { useRef, useState, useMemo, useEffect } from 'react';
+import { toast } from 'react-hot-toast';
 import { useFileSystem } from '../contexts/FileSystemContext';
 import { useAuth } from '../contexts/AuthContext';
 import { FileNode } from '../types';
@@ -29,7 +30,6 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
 
     // UI States
     const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-    const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error', message: string } | null>(null);
     const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
     // Selection State
@@ -67,14 +67,6 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
             setIsLoadingShared(false);
         }
     }, [currentFolderId, mode]);
-
-    // Auto hide toast
-    useEffect(() => {
-        if (toastMessage) {
-            const timer = setTimeout(() => setToastMessage(null), 3000);
-            return () => clearTimeout(timer);
-        }
-    }, [toastMessage]);
 
     // Clear selection on folder navigation
     useEffect(() => {
@@ -151,7 +143,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
         if (newName && newName !== currentName) {
             const success = await renameNode(id, newName);
             if (success) {
-                setToastMessage({ type: 'success', message: 'Renamed successfully' });
+                toast.success('Renamed successfully');
             }
         }
     };
@@ -159,18 +151,18 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
     const handleSaveToDrive = async () => {
         if (selectedIds.size === 0) return;
         setIsSaving(true);
-        setToastMessage({ type: 'success', message: 'Saving to My Drive...' });
+        toast.success('Saving to My Drive...');
 
         try {
             const success = await saveSharedFiles(Array.from(selectedIds));
             if (success) {
-                setToastMessage({ type: 'success', message: 'Saved to My Drive successfully' });
+                toast.success('Saved to My Drive successfully');
                 setSelectedIds(new Set());
             } else {
-                setToastMessage({ type: 'error', message: 'Failed to save files' });
+                toast.error('Failed to save files');
             }
         } catch (err) {
-            setToastMessage({ type: 'error', message: 'An error occurred' });
+            toast.error('An error occurred');
         } finally {
             setIsSaving(false);
         }
@@ -182,7 +174,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
         const itemsToDownload = currentItems.filter(f => selectedIds.has(f.id));
 
         if (itemsToDownload.length === 0) {
-            setToastMessage({ type: 'error', message: 'No items selected' });
+            toast.error('No items selected');
             return;
         }
 
@@ -200,7 +192,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
     const handleClearShared = async () => {
         if (confirm('Are you sure you want to clear all shared files? This will remove them from your list.')) {
             await clearSharedFiles();
-            setToastMessage({ type: 'success', message: 'Shared files cleared' });
+            toast.success('Shared files cleared');
         }
     };
 
@@ -265,9 +257,9 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
                 await createFolder(newFolderName);
                 setNewFolderName('');
                 setShowNewFolderInput(false);
-                setToastMessage({ type: 'success', message: `Folder "${newFolderName}" created successfully!` });
+                toast.success(`Folder "${newFolderName}" created successfully!`);
             } catch (e) {
-                setToastMessage({ type: 'error', message: 'Failed to create folder' });
+                toast.error('Failed to create folder');
             }
         }
     };
@@ -275,7 +267,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
     const handleDelete = async (id: string) => {
         if (confirm('Are you sure you want to delete this item?')) {
             await deleteNode(id);
-            setToastMessage({ type: 'success', message: 'Item deleted' });
+            toast.success('Item deleted');
         }
     };
 
@@ -285,7 +277,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
                 await deleteNode(id);
             }
             setSelectedIds(new Set());
-            setToastMessage({ type: 'success', message: 'Items deleted' });
+            toast.success('Items deleted');
         }
     };
 
@@ -342,14 +334,14 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
                                         <Icon name="download" />
                                     </button>
                                     <button
-                                        onClick={() => { copyItems(selectedIds); setToastMessage({ type: 'success', message: 'Copied to clipboard' }); setSelectedIds(new Set()); }}
+                                        onClick={() => { copyItems(selectedIds); toast.success('Copied to clipboard'); setSelectedIds(new Set()); }}
                                         className="p-2 text-gray-600 hover:bg-gray-100 rounded-md transition"
                                         title="Copy Selected"
                                     >
                                         <Icon name="copy" />
                                     </button>
                                     <button
-                                        onClick={() => { cutItems(selectedIds); setToastMessage({ type: 'success', message: 'Cut to clipboard' }); setSelectedIds(new Set()); }}
+                                        onClick={() => { cutItems(selectedIds); toast.success('Cut to clipboard'); setSelectedIds(new Set()); }}
                                         className="p-2 text-gray-600 hover:bg-gray-100 rounded-md transition"
                                         title="Cut Selected"
                                     >
@@ -387,7 +379,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
 
                     {mode === 'my-drive' && clipboard.items.size > 0 && (
                         <button
-                            onClick={async () => { await pasteItems(); setToastMessage({ type: 'success', message: 'Items pasted' }); }}
+                            onClick={async () => { await pasteItems(); toast.success('Items pasted'); }}
                             className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition font-medium text-sm shadow-sm"
                             title={`Paste ${clipboard.items.size} items`}
                         >
@@ -405,7 +397,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
                     )}
 
                     <button
-                        onClick={() => { refreshFiles(); setToastMessage({ type: 'success', message: 'Refreshing...' }); }}
+                        onClick={() => { refreshFiles(); toast.success('Refreshing...'); }}
                         className="p-2 text-gray-500 hover:text-brand-600 hover:bg-gray-100 rounded-md transition"
                         title="Refresh"
                     >
@@ -491,14 +483,6 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
                 </div>
             )}
 
-            {/* Toast Notification */}
-            {toastMessage && (
-                <div className={`fixed bottom-8 right-8 px-6 py-3 rounded-lg shadow-lg text-white font-medium z-50 animate-bounce-in ${toastMessage.type === 'success' ? 'bg-green-600' : 'bg-red-600'}`}>
-                    <Icon name={toastMessage.type === 'success' ? 'check-circle' : 'exclamation-circle'} className="mr-2" />
-                    {toastMessage.message}
-                </div>
-            )}
-
             {/* File List / Grid */}
             <div className="flex-1 overflow-y-auto p-4" onClick={() => { setSelectedIds(new Set()); setActiveMenuId(null); }}>
                 {isLoadingShared ? (
@@ -564,10 +548,10 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
                                                 <button onClick={(e) => { e.stopPropagation(); downloadFile(node.id, node.name, node.type === 'folder'); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                                                     <Icon name="download" className="text-gray-400" /> Download
                                                 </button>
-                                                <button onClick={(e) => { e.stopPropagation(); copyItems(new Set([node.id])); setToastMessage({ type: 'success', message: 'Copied' }); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                                                <button onClick={(e) => { e.stopPropagation(); copyItems(new Set([node.id])); toast.success('Copied to clipboard'); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                                                     <Icon name="copy" className="text-gray-400" /> Copy
                                                 </button>
-                                                <button onClick={(e) => { e.stopPropagation(); cutItems(new Set([node.id])); setToastMessage({ type: 'success', message: 'Cut' }); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                                                <button onClick={(e) => { e.stopPropagation(); cutItems(new Set([node.id])); toast.success('Cut to clipboard'); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                                                     <Icon name="cut" className="text-gray-400" /> Cut
                                                 </button>
                                                 <button onClick={(e) => { e.stopPropagation(); handleDelete(node.id); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
@@ -582,7 +566,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
                                                 <button onClick={(e) => { e.stopPropagation(); downloadFile(node.id, node.name, node.type === 'folder'); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                                                     <Icon name="download" className="text-gray-400" /> Download
                                                 </button>
-                                                <button onClick={(e) => { e.stopPropagation(); saveSharedFiles([node.id]); setToastMessage({ type: 'success', message: 'Saved to My Drive' }); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-brand-600 hover:bg-brand-50 flex items-center gap-2">
+                                                <button onClick={(e) => { e.stopPropagation(); saveSharedFiles([node.id]); toast.success('Saved to My Drive'); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-brand-600 hover:bg-brand-50 flex items-center gap-2">
                                                     <Icon name="cloud-download-alt" className="text-brand-400" /> Save to Drive
                                                 </button>
                                             </>

@@ -144,8 +144,12 @@ async function deleteDbFolderRecursively(db: any, folderId: string) {
         if (child.type === 'folder') {
             await deleteDbFolderRecursively(db, child.id);
         }
+        // Clean up shared references first
+        await db.run('DELETE FROM shared_files WHERE file_id = ?', child.id);
         await db.run('DELETE FROM files WHERE id = ?', child.id);
     }
+    // Clean up shared references for the folder itself
+    await db.run('DELETE FROM shared_files WHERE file_id = ?', folderId);
     await db.run('DELETE FROM files WHERE id = ?', folderId);
 }
 
@@ -394,6 +398,7 @@ app.post('/api/upload/complete', async (req, res) => {
     const now = Date.now();
 
     // Check user quota before completing upload
+    // Check user quota before completing upload (Preliminary Check)
     try {
         const user = await db.get('SELECT storage_limit FROM users WHERE id = ?', userId);
         if (!user) {
@@ -412,14 +417,25 @@ app.post('/api/upload/complete', async (req, res) => {
 
         // Check if upload would exceed quota
         if (fileSize > availableSpace) {
-            // Cleanup temp files
-            try {
-                if (fs.existsSync(tempDir)) {
-                    fs.rmSync(tempDir, { recursive: true, force: true });
+            // Cleanup temp files immediately
+            const safeCleanupTempDir = async (dirPath: string) => {
+                if (!fs.existsSync(dirPath)) return;
+                let retries = 5;
+                while (retries > 0) {
+                    try {
+                        fs.rmSync(dirPath, { recursive: true, force: true });
+                        return;
+                    } catch (e: any) {
+                        if (e.code === 'EBUSY' || e.code === 'ENOTEMPTY') {
+                            retries--;
+                            await new Promise(r => setTimeout(r, 200));
+                        } else {
+                            return;
+                        }
+                    }
                 }
-            } catch (e) {
-                console.error('Cleanup error:', e);
-            }
+            };
+            safeCleanupTempDir(tempDir);
 
             return res.status(413).json({
                 error: 'Quota exceeded',
@@ -430,6 +446,10 @@ app.post('/api/upload/complete', async (req, res) => {
                 fileSize
             });
         }
+
+        // Pass user limit to next steps if needed
+        req.userLimit = user.storage_limit;
+
     } catch (error) {
         console.error('Quota check error:', error);
         return res.status(500).json({ error: 'Failed to check quota' });
@@ -459,10 +479,23 @@ app.post('/api/upload/complete', async (req, res) => {
                     readStream.pipe(writeStream, { end: false });
 
                     readStream.on('end', () => {
-                        // Unlink immediately to free space
-                        fs.unlink(chunkPath, (err) => {
-                            if (err) console.error(`Failed to delete chunk ${chunkPath}:`, err);
-                        });
+                        // Unlink with small delay and retry to avoid EBUSY
+                        setTimeout(() => {
+                            let retries = 3;
+                            const unlinkWithRetry = () => {
+                                fs.unlink(chunkPath, (err) => {
+                                    if (err) {
+                                        if (err.code === 'EBUSY' && retries > 0) {
+                                            retries--;
+                                            setTimeout(unlinkWithRetry, 100);
+                                        } else {
+                                            console.error(`Failed to delete chunk ${chunkPath} after retries:`, err);
+                                        }
+                                    }
+                                });
+                            };
+                            unlinkWithRetry();
+                        }, 100);
                         resolve(null);
                     });
 
@@ -478,36 +511,73 @@ app.post('/api/upload/complete', async (req, res) => {
 
         writeStream.end();
 
-        // Cleanup temp dir
-        try {
-            if (fs.existsSync(tempDir)) {
-                // Use rmSync with recursive: true to ensure it works even if not empty
-                // (though it should be empty if all chunks were deleted)
-                fs.rmSync(tempDir, { recursive: true, force: true });
+        // Cleanup temp dir with retry
+        const safeCleanupTempDir = async (dirPath: string) => {
+            if (!fs.existsSync(dirPath)) return;
+
+            let retries = 5;
+            while (retries > 0) {
+                try {
+                    fs.rmSync(dirPath, { recursive: true, force: true });
+                    return;
+                } catch (e: any) {
+                    if (e.code === 'EBUSY' || e.code === 'ENOTEMPTY') {
+                        retries--;
+                        await new Promise(r => setTimeout(r, 200));
+                    } else {
+                        console.warn(`Warning: Failed to cleanup temp dir ${dirPath}:`, e);
+                        return; // Give up on other errors
+                    }
+                }
             }
-        } catch (cleanupError) {
-            console.warn(`Warning: Failed to cleanup temp dir ${tempDir}:`, cleanupError);
-            // Do not fail the request just because cleanup failed
-        }
+            console.warn(`Warning: Could not fully remove temp dir ${dirPath} after retries. System will clean up later.`);
+        };
+
+        // Don't await this, let it happen in background
+        safeCleanupTempDir(tempDir);
 
         setPermissions(targetPath);
 
         // Verify size
         const stats = fs.statSync(targetPath);
 
-        await db.run(
-            `INSERT INTO files (id, user_id, parent_id, name, type, size, path, mime_type, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            fileId,
-            userId,
-            parentId === 'root' ? null : parentId,
-            fileName,
-            'file',
-            stats.size,
-            targetPath,
-            mimeType || 'application/octet-stream',
-            now
-        );
+        // Final Verification with Transaction
+        try {
+            await db.run('BEGIN TRANSACTION');
+
+            // Re-check quota atomically (snapshot)
+            const userCheck = await db.get('SELECT storage_limit FROM users WHERE id = ?', userId);
+            const currentUsageCheck = await db.get(
+                'SELECT COALESCE(SUM(size), 0) as total FROM files WHERE user_id = ? AND type = "file"',
+                userId
+            );
+
+            if (userCheck && (currentUsageCheck.total + stats.size > userCheck.storage_limit)) {
+                await db.run('ROLLBACK');
+                // Delete the file we just created
+                fs.unlinkSync(targetPath);
+                return res.status(413).json({ error: 'Quota exceeded (concurrent upload detected)' });
+            }
+
+            await db.run(
+                `INSERT INTO files (id, user_id, parent_id, name, type, size, path, mime_type, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                fileId,
+                userId,
+                parentId === 'root' ? null : parentId,
+                fileName,
+                'file',
+                stats.size,
+                targetPath,
+                mimeType || 'application/octet-stream',
+                now
+            );
+
+            await db.run('COMMIT');
+        } catch (txError) {
+            await db.run('ROLLBACK');
+            throw txError;
+        }
 
         lastFileSystemChange = Date.now();
 
@@ -699,9 +769,14 @@ app.put('/api/files/:id/rename', async (req, res) => {
         return res.status(404).json({ error: 'File not found' });
     }
 
-    // Sanitize name
-    const safeName = name.replace(/[^a-zA-Z0-9\.\-\_\s]/g, '').trim();
+    // Sanitize name with broader allowance
+    const safeName = name.replace(/[^a-zA-Z0-9\.\-\_\s\(\)\[\]\,\&\+]/g, '').trim();
     if (!safeName) return res.status(400).json({ error: 'Invalid name' });
+
+    // Store old values for rollback
+    const oldName = file.name;
+    const oldPath = file.path;
+    const oldUpdatedAt = file.created_at; // Or whatever timestamp field used
 
     try {
         const parentPath = path.dirname(file.path);
@@ -720,21 +795,39 @@ app.put('/api/files/:id/rename', async (req, res) => {
             fs.renameSync(file.path, newPath);
         }
 
-        // Update DB
-        const now = Date.now();
-        await db.run('UPDATE files SET name = ?, path = ?, created_at = ? WHERE id = ?', safeName, newPath, now, id);
+        try {
+            // Update DB with Transaction
+            await db.run('BEGIN TRANSACTION');
 
-        // If folder, update children paths
-        if (file.type === 'folder') {
-            const oldPathWithSep = file.path + path.sep;
-            const newPathWithSep = newPath + path.sep;
+            // Update DB
+            const now = Date.now();
+            await db.run('UPDATE files SET name = ?, path = ?, created_at = ? WHERE id = ?', safeName, newPath, now, id);
 
-            await db.run(
-                `UPDATE files 
-                 SET path = ? || SUBSTR(path, LENGTH(?) + 1) 
-                 WHERE path LIKE ? || '%'`,
-                newPathWithSep, oldPathWithSep, oldPathWithSep
-            );
+            // If folder, update children paths
+            if (file.type === 'folder') {
+                const oldPathWithSep = file.path + path.sep;
+                const newPathWithSep = newPath + path.sep;
+
+                await db.run(
+                    `UPDATE files 
+                     SET path = ? || SUBSTR(path, LENGTH(?) + 1) 
+                     WHERE path LIKE ? || '%'`,
+                    newPathWithSep, oldPathWithSep, oldPathWithSep
+                );
+            }
+
+            await db.run('COMMIT');
+        } catch (dbError) {
+            await db.run('ROLLBACK');
+            // Attempt to rollback physical rename
+            try {
+                if (fs.existsSync(newPath) && !fs.existsSync(file.path)) {
+                    fs.renameSync(newPath, file.path);
+                }
+            } catch (rollbackError) {
+                console.error('CRITICAL: Failed to rollback physical file rename after DB error:', rollbackError);
+            }
+            throw dbError;
         }
 
         lastFileSystemChange = Date.now();
@@ -771,83 +864,73 @@ app.delete('/api/files/:id', async (req, res) => {
     }
 
     try {
-        if (file.type === 'file' && file.path) {
+        if (file.type === 'file') {
             // Delete actual file
-            if (fs.existsSync(file.path)) {
-                fs.unlinkSync(file.path);
-            }
-        }
-
-        // Delete from DB
-        await db.run('DELETE FROM files WHERE id = ?', id);
-
-        // Recursive delete for folders
-        if (file.type === 'folder') {
-            await deleteDbFolderRecursively(db, id);
-            // Also try to remove physical directory if it exists and is empty/not needed
             if (file.path && fs.existsSync(file.path)) {
-                try {
-                    fs.rmdirSync(file.path, { recursive: true });
-                } catch (e) {
-                    console.error('Failed to remove physical directory:', e);
+                let retries = 5;
+                while (retries > 0) {
+                    try {
+                        fs.unlinkSync(file.path);
+                        break;
+                    } catch (e: any) {
+                        if (e.code === 'EBUSY' || e.code === 'EPERM') {
+                            retries--;
+                            if (retries === 0) throw e;
+                            await new Promise(r => setTimeout(r, 200));
+                        } else {
+                            throw e;
+                        }
+                    }
                 }
+            }
+            // Delete shared references
+            await db.run('DELETE FROM shared_files WHERE file_id = ?', id);
+            // Delete from DB
+            await db.run('DELETE FROM files WHERE id = ?', id);
+        } else {
+            // For folders, remove physical first to ensure no zombies
+            if (file.path && fs.existsSync(file.path)) {
+                let retries = 5;
+                while (retries > 0) {
+                    try {
+                        // Use rmSync which is more robust for recursive deletion
+                        fs.rmSync(file.path, { recursive: true, force: true });
+                        break;
+                    } catch (e: any) {
+                        if (e.code === 'EBUSY' || e.code === 'ENOTEMPTY' || e.code === 'EPERM') {
+                            retries--;
+                            if (retries === 0) throw e; // Propagate error to prevent DB delete
+                            await new Promise(r => setTimeout(r, 200));
+                        } else {
+                            throw e; // Propagate other errors
+                        }
+                    }
+                }
+            }
+
+            // Start Transaction for DB cleanup
+            await db.run('BEGIN TRANSACTION');
+            try {
+                // Use recursive clean up
+                await deleteDbFolderRecursively(db, id);
+                await db.run('COMMIT');
+            } catch (dbError) {
+                await db.run('ROLLBACK');
+                throw dbError; // Physical was deleted, but DB failed. 
+                // This results in "Missing" files which sync will clean up later.
+                // Better than "Zombie" files (DB exists, physical missing).
             }
         }
 
         lastFileSystemChange = Date.now();
         res.json({ success: true });
     } catch (error) {
+        console.error('Delete error:', error);
         res.status(500).json({ error: 'Error deleting file' });
     }
 });
 
-// Download File
-app.get('/api/download/:id', async (req, res) => {
-    const { id } = req.params;
-    const userId = (req.headers['x-user-id'] as string) || (req.query.userId as string);
 
-    if (!userId) {
-        console.error('Download failed: User ID missing');
-        return res.status(400).json({ error: 'User ID required' });
-    }
-
-    const db = await getDb();
-
-    // Check if file exists
-    const file = await db.get('SELECT * FROM files WHERE id = ?', id);
-    if (!file) {
-        return res.status(404).json({ error: 'File not found' });
-    }
-
-    if (file.type === 'folder') {
-        return res.status(400).json({ error: 'Folder download not supported yet' });
-    }
-
-    // Check permissions
-    // 1. Owner
-    let hasAccess = file.user_id === userId;
-
-    // 2. Shared
-    if (!hasAccess) {
-        const shareRecord = await db.get(
-            'SELECT id FROM shared_files WHERE file_id = ? AND to_user_id = ?',
-            id, userId
-        );
-        if (shareRecord) {
-            hasAccess = true;
-        }
-    }
-
-    if (!hasAccess) {
-        return res.status(403).json({ error: 'Access denied' });
-    }
-
-    if (!file.path || !fs.existsSync(file.path)) {
-        return res.status(404).json({ error: 'Physical file not found' });
-    }
-
-    res.download(file.path, file.name);
-});
 
 // User Management (Admin)
 app.get('/api/users', async (req, res) => {
@@ -1029,6 +1112,21 @@ async function updateChildrenPaths(db: any, folderId: string, newFolderPath: str
     }
 }
 
+// Helper to check if target is a subfolder of source
+async function isSubfolder(db: any, sourceId: string, targetId: string | null): Promise<boolean> {
+    if (!targetId || targetId === 'root') return false;
+    if (sourceId === targetId) return true;
+
+    let currId: string | null = targetId;
+    while (currId) {
+        if (currId === sourceId) return true;
+        const parent: any = await db.get('SELECT parent_id FROM files WHERE id = ?', currId);
+        if (!parent) break;
+        currId = parent.parent_id;
+    }
+    return false;
+}
+
 // Move API
 app.post('/api/files/move', async (req, res) => {
     const { fileIds, targetFolderId } = req.body;
@@ -1044,12 +1142,21 @@ app.post('/api/files/move', async (req, res) => {
     try {
         const targetPath = await getPhysicalPath(db, userId, parentId);
 
+        // Start Transaction
+        await db.run('BEGIN TRANSACTION');
+
         for (const id of fileIds) {
-            // Prevent moving folder into itself
+            // Prevent moving folder into itself generally
             if (id === targetFolderId) continue;
 
             const node = await db.get('SELECT * FROM files WHERE id = ? AND user_id = ?', id, userId);
             if (!node) continue;
+
+            // Prevent moving folder into its own subfolder
+            if (node.type === 'folder' && await isSubfolder(db, id, targetFolderId)) {
+                await db.run('ROLLBACK');
+                return res.status(400).json({ error: `Cannot move folder '${node.name}' into its own subfolder` });
+            }
 
             // Physical Move
             if (node.path && fs.existsSync(node.path)) {
@@ -1064,17 +1171,20 @@ app.post('/api/files/move', async (req, res) => {
                         const nameWithoutExt = path.basename(node.path, ext);
                         const newName = `${nameWithoutExt}_moved_${uuidv4()}${ext}`;
                         newPhysicalPath = path.join(targetPath, newName);
-                        // Update name in DB if we renamed it?
-                        // The prompt didn't strictly ask for rename logic but it's good practice.
-                        // But if we rename, we should update 'name' column too?
-                        // Yes, otherwise 'name' and physical name diverge.
-                        // But for simplicity let's stick to simple rename.
                     }
 
-                    fs.renameSync(node.path, newPhysicalPath);
-                    setPermissions(newPhysicalPath);
+                    try {
+                        fs.renameSync(node.path, newPhysicalPath);
+                        setPermissions(newPhysicalPath);
+                    } catch (fsError) {
+                        // If physical move fails, rollback DB and abort
+                        await db.run('ROLLBACK');
+                        throw fsError;
+                    }
 
-                    await db.run('UPDATE files SET path = ? WHERE id = ?', newPhysicalPath, id);
+                    // Update path AND name (if changed due to conflict)
+                    const finalName = path.basename(newPhysicalPath);
+                    await db.run('UPDATE files SET path = ?, name = ? WHERE id = ?', newPhysicalPath, finalName, id);
 
                     if (node.type === 'folder') {
                         await updateChildrenPaths(db, id, newPhysicalPath);
@@ -1084,10 +1194,17 @@ app.post('/api/files/move', async (req, res) => {
 
             await db.run('UPDATE files SET parent_id = ? WHERE id = ? AND user_id = ?', parentId, id, userId);
         }
+
+        await db.run('COMMIT');
+
         lastFileSystemChange = Date.now();
         res.json({ success: true });
     } catch (error) {
         console.error('Move error:', error);
+        // Try rollback if transaction key exists? 
+        // We can safely try rollback, if no transaction active it might throw but we are already in catch.
+        try { await db.run('ROLLBACK'); } catch (e) { }
+
         res.status(500).json({ error: 'Error moving files' });
     }
 });

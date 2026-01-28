@@ -1,4 +1,5 @@
 ﻿import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { toast } from 'react-hot-toast';
 import { FileNode, TransferItem, SharedItem } from '../types';
 import { useAuth } from './AuthContext';
 import { formatBytes } from '../utils/format';
@@ -212,7 +213,7 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
                         `File size: ${formatBytes(errorData.fileSize || file.size)}\n` +
                         `Available space: ${formatBytes(errorData.availableSpace || 0)}\n\n ` +
                         `Used: ${formatBytes(errorData.usedSpace || 0)} / ${formatBytes(errorData.totalSpace || 0)}`;
-                    alert(message);
+                    toast.error(message, { duration: 6000 });
                     updateTransfer(transferId, { status: 'error' });
                     return;
                 } else {
@@ -335,7 +336,7 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
         // Check quota first
         const quotaCheck = await checkQuota(file.size);
         if (!quotaCheck.canUpload) {
-            alert(quotaCheck.message || 'Cannot upload: quota exceeded');
+            toast.error(quotaCheck.message || 'Cannot upload: quota exceeded', { duration: 5000 });
             return;
         }
 
@@ -375,7 +376,7 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
         // Check quota for total size
         const quotaCheck = await checkQuota(totalSize);
         if (!quotaCheck.canUpload) {
-            alert(`Cannot upload ${items.length} file(s)\n\n` + quotaCheck.message);
+            toast.error(`Cannot upload ${items.length} file(s)\n\n` + quotaCheck.message, { duration: 5000 });
             return;
         }
 
@@ -566,7 +567,7 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
 
         const quotaCheck = await checkQuota(totalSize);
         if (!quotaCheck.canUpload) {
-            alert(`Cannot upload:\n\n` + quotaCheck.message);
+            toast.error(`Cannot upload:\n\n` + quotaCheck.message, { duration: 5000 });
             return;
         }
 
@@ -671,7 +672,7 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
                 return true;
             } else {
                 const data = await response.json();
-                alert(data.error || 'Failed to rename');
+                toast.error(data.error || 'Failed to rename');
             }
         } catch (error) {
             console.error('Rename error:', error);
