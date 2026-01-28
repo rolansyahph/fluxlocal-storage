@@ -12,18 +12,20 @@ const formatTime = (seconds: number) => {
     return `${m}m ${s}s`;
 };
 
-const TransferList = ({ 
-    title, 
-    type, 
-    items, 
-    onClear, 
-    colorClass 
-}: { 
-    title: string, 
-    type: 'upload' | 'download', 
-    items: TransferItem[], 
+const TransferList = ({
+    title,
+    type,
+    items,
+    onClear,
+    onCancel,
+    colorClass
+}: {
+    title: string,
+    type: 'upload' | 'download',
+    items: TransferItem[],
     onClear: () => void,
-    colorClass: string 
+    onCancel: (id: string) => void,
+    colorClass: string
 }) => {
     const [isExpanded, setIsExpanded] = useState(true);
 
@@ -34,7 +36,7 @@ const TransferList = ({
     return (
         <div className="bg-white shadow-xl rounded-lg border border-gray-200 overflow-hidden flex flex-col font-sans mb-4 last:mb-0 w-80">
             {/* Header */}
-            <div 
+            <div
                 className={`${colorClass} text-white p-3 flex justify-between items-center cursor-pointer hover:opacity-90 transition`}
                 onClick={() => setIsExpanded(!isExpanded)}
             >
@@ -49,7 +51,7 @@ const TransferList = ({
                     </span>
                 </div>
                 <div className="flex items-center gap-2">
-                     <Icon name={isExpanded ? "chevron-down" : "chevron-up"} className="text-xs text-white/70" />
+                    <Icon name={isExpanded ? "chevron-down" : "chevron-up"} className="text-xs text-white/70" />
                 </div>
             </div>
 
@@ -58,60 +60,70 @@ const TransferList = ({
                 <div className="max-h-48 overflow-y-auto bg-gray-50 border-t border-gray-100">
                     {hasCompleted && (
                         <div className="p-2 text-right">
-                            <button 
-                                onClick={(e) => { e.stopPropagation(); onClear(); }} 
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onClear(); }}
                                 className={`text-xs ${type === 'upload' ? 'text-blue-600 hover:text-blue-800' : 'text-green-600 hover:text-green-800'} px-2 font-medium`}
                             >
                                 Clear list
                             </button>
                         </div>
                     )}
-                   
-                   {[...items].reverse().map(item => (
-                     <div key={item.id} className="p-3 border-b border-gray-100 bg-white last:border-0 hover:bg-gray-50">
-                       <div className="flex justify-between items-center mb-1">
-                         <div className="flex items-center gap-2 truncate pr-2 flex-1">
-                            <Icon 
-                                name={type === 'upload' ? 'arrow-up' : 'arrow-down'} 
-                                className="text-xs text-gray-400" 
-                            />
-                            <span className="text-sm text-gray-700 truncate font-medium w-32 md:w-40" title={item.name}>
-                                {item.name}
-                            </span>
-                         </div>
-                         <span className={`text-xs font-mono ${item.status === 'error' ? 'text-red-500 font-bold' : 'text-gray-500'}`}>
-                            {item.status === 'error' ? 'Error' : 
-                             item.status === 'merging' ? 'Merging...' : 
-                             item.status === 'pending' ? 'Pending...' :
-                             `${Math.round(item.progress)}%`}
-                         </span>
-                       </div>
-                       
-                       {/* Progress Bar */}
-                       <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
-                         <div 
-                            className={`h-full rounded-full transition-all duration-300 ${
-                                item.status === 'error' ? 'bg-red-500' : 
-                                item.status === 'merging' ? 'bg-yellow-500 animate-pulse' : 
-                                type === 'upload' ? 'bg-blue-500' : 'bg-green-500'
-                            }`} 
-                            style={{ width: `${item.progress}%` }}
-                         ></div>
-                       </div>
-                       
-                       {/* Details */}
-                       <div className="flex justify-between items-center text-[10px] text-gray-400 mt-1">
-                           <span>
-                               {formatBytes(item.loaded)} / {formatBytes(item.size)}
-                           </span>
-                           {item.status === 'processing' && item.speed !== undefined && (
-                               <span>
-                                   {formatBytes(item.speed)}/s • {formatTime((item.size - item.loaded) / item.speed)} left
-                               </span>
-                           )}
-                       </div>
-                     </div>
-                   ))}
+
+                    {[...items].reverse().map(item => (
+                        <div key={item.id} className="p-3 border-b border-gray-100 bg-white last:border-0 hover:bg-gray-50">
+                            <div className="flex justify-between items-center mb-1">
+                                <div className="flex items-center gap-2 truncate pr-2 flex-1">
+                                    <Icon
+                                        name={type === 'upload' ? 'arrow-up' : 'arrow-down'}
+                                        className="text-xs text-gray-400"
+                                    />
+                                    <span className="text-sm text-gray-700 truncate font-medium w-32 md:w-36" title={item.name}>
+                                        {item.name}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className={`text-xs font-mono ${item.status === 'error' ? 'text-red-500 font-bold' : 'text-gray-500'}`}>
+                                        {item.status === 'error' ? 'Error' :
+                                            item.status === 'merging' ? 'Merging...' :
+                                                item.status === 'pending' ? 'Pending...' :
+                                                    `${Math.round(item.progress)}%`}
+                                    </span>
+                                    {(item.status === 'processing' || item.status === 'pending') && (
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); onCancel(item.id); }}
+                                            className="text-gray-400 hover:text-red-500 transition-colors bg-gray-100 hover:bg-red-50 rounded p-1"
+                                            title="Stop Transfer"
+                                        >
+                                            <Icon name="stop" className="text-[10px]" />
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Progress Bar */}
+                            <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                                <div
+                                    className={`h-full rounded-full transition-all duration-300 ${item.status === 'error' ? 'bg-red-500' :
+                                            item.status === 'merging' ? 'bg-yellow-500 animate-pulse' :
+                                                type === 'upload' ? 'bg-blue-500' : 'bg-green-500'
+                                        }`}
+                                    style={{ width: `${item.progress}%` }}
+                                ></div>
+                            </div>
+
+                            {/* Details */}
+                            <div className="flex justify-between items-center text-[10px] text-gray-400 mt-1">
+                                <span>
+                                    {formatBytes(item.loaded)} / {formatBytes(item.size)}
+                                </span>
+                                {item.status === 'processing' && item.speed !== undefined && (
+                                    <span>
+                                        {formatBytes(item.speed)}/s • {formatTime((item.size - item.loaded) / item.speed)} left
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    ))}
                 </div>
             )}
         </div>
@@ -119,29 +131,31 @@ const TransferList = ({
 };
 
 export const TransferManager: React.FC = () => {
-  const { transfers, clearCompletedTransfers } = useFileSystem();
+    const { transfers, clearCompletedTransfers, cancelTransfer } = useFileSystem();
 
-  const uploads = transfers.filter(t => t.type === 'upload');
-  const downloads = transfers.filter(t => t.type === 'download');
+    const uploads = transfers.filter(t => t.type === 'upload');
+    const downloads = transfers.filter(t => t.type === 'download');
 
-  if (transfers.length === 0) return null;
+    if (transfers.length === 0) return null;
 
-  return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end max-w-[calc(100vw-2rem)] animate-slide-in-up">
-        <TransferList 
-            title="Uploads" 
-            type="upload" 
-            items={uploads} 
-            onClear={() => clearCompletedTransfers('upload')}
-            colorClass="bg-blue-600"
-        />
-        <TransferList 
-            title="Downloads" 
-            type="download" 
-            items={downloads} 
-            onClear={() => clearCompletedTransfers('download')}
-            colorClass="bg-green-600"
-        />
-    </div>
-  );
+    return (
+        <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end max-w-[calc(100vw-2rem)] animate-slide-in-up">
+            <TransferList
+                title="Uploads"
+                type="upload"
+                items={uploads}
+                onClear={() => clearCompletedTransfers('upload')}
+                onCancel={cancelTransfer}
+                colorClass="bg-blue-600"
+            />
+            <TransferList
+                title="Downloads"
+                type="download"
+                items={downloads}
+                onClear={() => clearCompletedTransfers('download')}
+                onCancel={cancelTransfer}
+                colorClass="bg-green-600"
+            />
+        </div>
+    );
 };
