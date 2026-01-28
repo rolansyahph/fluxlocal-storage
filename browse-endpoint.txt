@@ -1,0 +1,46 @@
+
+// Helper for checking access recursively
+const checkFolderAccess = async (db: any, folderId: string, userId: string) => {
+    let curr = folderId;
+    const visited = new Set();
+    
+    while (curr && !visited.has(curr)) {
+        visited.add(curr);
+        
+        const file = await db.get('SELECT id, user_id, parent_id FROM files WHERE id = ?', curr);
+        if (!file) return false;
+        
+        if (file.user_id === userId) return true;
+        
+        const shared = await db.get('SELECT 1 FROM shared_files WHERE file_id = ? AND to_user_id = ?', curr, userId);
+        if (shared) return true;
+        
+        curr = file.parent_id;
+    }
+    return false;
+};
+
+// Browse Shared Folder Children
+app.get('/api/browse/:folderId', async (req, res) => {
+    const userId = req.headers['x-user-id'] as string;
+    const { folderId } = req.params;
+
+    if (!userId || !folderId) {
+        return res.status(400).json({ error: 'Missing parameters' });
+    }
+
+    const db = await getDb();
+    
+    try {
+        const canAccess = await checkFolderAccess(db, folderId, userId);
+        if (!canAccess) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        const children = await db.all('SELECT * FROM files WHERE parent_id = ?', folderId);
+        res.json(children);
+    } catch (error) {
+        console.error('Browse error:', error);
+        res.status(500).json({ error: 'Browse failed' });
+    }
+});

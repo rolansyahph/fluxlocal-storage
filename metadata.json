@@ -1,0 +1,5 @@
+{
+  "name": "FluxLocal Storage",
+  "description": "A Google Drive-like file management system with Admin-controlled user quotas and folder uploads.",
+  "requestFramePermissions": []
+}
