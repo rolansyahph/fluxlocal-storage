@@ -22,6 +22,7 @@ interface FileSystemContextType {
     uploadFile: (file: File) => Promise<void>;
     uploadFiles: (items: { file: File, parentId?: string }[]) => Promise<void>;
     uploadFolder: (files: FileList) => Promise<void>;
+    uploadWithStructure: (items: { file: File, path: string }[]) => Promise<void>;
     deleteNode: (id: string) => Promise<void>;
     copyItems: (ids: Set<string>) => void;
     cutItems: (ids: Set<string>) => void;
@@ -431,93 +432,20 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
     const downloadFile = async (fileId: string, fileName: string, isFolder: boolean = false) => {
         if (!user) return;
 
-        const transferId = Math.random().toString(36).substring(7);
-        const abortController = new AbortController();
-
-        setTransfers(prev => [...prev, {
-            id: transferId,
-            name: isFolder ? `${fileName}.zip` : fileName,
-            type: 'download',
-            progress: 0,
-            status: 'processing',
-            size: 0, // Unknown initially
-            loaded: 0,
-            abortController
-        }]);
-
         try {
-            // Use different endpoint for folders
+            // Direct browser download - no in-app notification
             const url = isFolder
-                ? `${API_BASE_URL}/api/download-folder/${fileId}`
-                : `${API_BASE_URL}/api/download/${fileId}`;
+                ? `${API_BASE_URL}/api/download-folder/${fileId}?userId=${user.id}`
+                : `${API_BASE_URL}/api/download/${fileId}?userId=${user.id}`;
 
-            console.log('Download request:', { fileId, fileName, isFolder, url });
-
-            const response = await fetch(url, {
-                headers: { 'x-user-id': user.id },
-                signal: abortController.signal
-            });
-
-            if (!response.ok) throw new Error('Download failed');
-
-            const contentLength = response.headers.get('Content-Length');
-            const totalSize = contentLength ? parseInt(contentLength) : 0;
-
-            if (totalSize > 0) {
-                updateTransfer(transferId, { size: totalSize });
-            }
-
-            const reader = response.body?.getReader();
-            if (!reader) throw new Error('ReadableStream not supported');
-
-            const chunks: BlobPart[] = [];
-            let loaded = 0;
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                if (value) {
-                    chunks.push(value);
-                    loaded += value.length;
-                    const progress = totalSize > 0 ? Math.round((loaded / totalSize) * 100) : 0;
-
-                    // Calculate speed
-                    const now = Date.now();
-                    // We need access to startTime from state/ref
-                    const transfer = transfersRef.current.find(t => t.id === transferId);
-                    const start = transfer?.startTime || now;
-                    const timeElapsed = (now - start) / 1000;
-
-                    let speed = 0;
-                    if (timeElapsed > 0.5) {
-                        speed = Math.round(loaded / timeElapsed);
-                    }
-
-                    updateTransfer(transferId, { loaded, progress, speed });
-                }
-            }
-
-            // Complete
-            const blob = new Blob(chunks);
-            const blobUrl = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = blobUrl;
+            a.href = url;
             a.download = isFolder ? `${fileName}.zip` : fileName;
             document.body.appendChild(a);
             a.click();
-            window.URL.revokeObjectURL(blobUrl);
             document.body.removeChild(a);
-
-            updateTransfer(transferId, { status: 'completed', progress: 100 });
-
-        } catch (error: any) {
-            if (error.name === 'AbortError') {
-                // Cancelled - do nothing as it's removed from state
-            } else {
-                console.error('Download error:', error);
-                updateTransfer(transferId, { status: 'error' });
-            }
+        } catch (error) {
+            console.error('Download init error:', error);
         }
     };
 
@@ -587,7 +515,7 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
         return files.filter(f => f.ownerId === user.id).reduce((acc, curr) => acc + curr.size, 0);
     }, [files, user]);
 
-    const createFolder = async (name: string, parentFolderId?: string): Promise<string | null> => {
+    const createFolder = async (name: string, parentFolderId?: string, skipRefresh = false): Promise<string | null> => {
         if (!user) return null;
         try {
             const response = await fetch(`${API_BASE_URL}/api/folder`, {
@@ -604,7 +532,7 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
             });
             if (response.ok) {
                 const data = await response.json();
-                fetchFiles();
+                if (!skipRefresh) fetchFiles();
                 return data.id;
             }
         } catch (error) {
@@ -613,50 +541,46 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
         return null;
     };
 
-
-
-    const uploadFolder = async (files: FileList) => {
-        if (!user || files.length === 0) return;
+    const uploadWithStructure = async (items: { file: File, path: string }[]) => {
+        if (!user || items.length === 0) return;
 
         // Calculate total size
-        const fileArray = Array.from(files);
-        const totalSize = fileArray.reduce((sum, file) => sum + file.size, 0);
-        const folderName = fileArray[0].webkitRelativePath.split('/')[0] || 'Unknown Folder';
+        const totalSize = items.reduce((sum, item) => sum + item.file.size, 0);
 
-        // Show confirmation with details
+        // Determine folder name from first item for confirmation message
+        // Path "Folder/Sub/File.txt" -> "Folder"
+        // If path is just "File.txt", it's a file at root.
+        const firstPath = items[0].path;
+        const rootFolder = firstPath.includes('/') ? firstPath.split('/')[0] : 'Multiple Items';
+
         const confirmed = confirm(
-            `📁 Upload Folder Confirmation\n\n` +
-            `Folder: ${folderName}\n` +
-            `Files: ${fileArray.length}\n` +
+            `📁 Upload With Structure\n\n` +
+            `Root: ${rootFolder}\n` +
+            `Files: ${items.length}\n` +
             `Total Size: ${formatBytes(totalSize)}\n\n` +
-            `Do you want to upload this folder?`
+            `Do you want to proceed?`
         );
 
         if (!confirmed) return;
 
-        // Check quota
         const quotaCheck = await checkQuota(totalSize);
         if (!quotaCheck.canUpload) {
-            alert(`Cannot upload folder "${folderName}"\n\n` + quotaCheck.message);
+            alert(`Cannot upload:\n\n` + quotaCheck.message);
             return;
         }
 
-        // Use a map to cache created folder IDs to minimize API calls and prevent race conditions
-        // Key: relative path (e.g., "Folder/SubFolder"), Value: folderId
         const folderCache = new Map<string, string>();
 
-        // Helper to recursively ensure folders exist
-        const ensureFolder = async (path: string): Promise<string | null> => {
-            if (!path || path === '.') return currentFolderId || 'root'; // Root level
-            if (folderCache.has(path)) return folderCache.get(path)!;
+        const ensureFolder = async (fullPath: string): Promise<string | null> => {
+            // fullPath is relative path from drag root "Folder/Sub/File.txt" -> we want folder part "Folder/Sub"
+            // Wait, path passed to this function is the FOLDER path (e.g. "Folder/Sub")
 
-            const parts = path.split('/');
+            if (!fullPath || fullPath === '.') return currentFolderId || 'root';
+            if (folderCache.has(fullPath)) return folderCache.get(fullPath)!;
+
+            const parts = fullPath.split('/');
             const folderName = parts.pop()!;
             const parentPath = parts.join('/');
-
-            // If parentPath is empty string, it means we are at the top level of the dropped folder
-            // But wait, ensureFolder is called with "Folder/Subfolder"
-            // If path is "Folder", parts.pop() is "Folder", parentPath is ""
 
             let parentId: string | null = null;
             if (parentPath === '') {
@@ -665,45 +589,51 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
                 parentId = await ensureFolder(parentPath);
             }
 
-            if (!parentId) return null;
+            if (!parentId) return null; // Parent creation failed
 
-            // Create folder (backend handles duplicates)
-            const newFolderId = await createFolder(folderName, parentId === 'root' ? undefined : parentId);
+            // Use silent creation to avoid refresh storm
+            const newFolderId = await createFolder(folderName, parentId === 'root' ? undefined : parentId, true);
 
             if (newFolderId) {
-                folderCache.set(path, newFolderId);
+                folderCache.set(fullPath, newFolderId);
                 return newFolderId;
             }
             return null;
         };
 
-        // uploadQueue already has fileArray from above
         const uploadQueue: { file: File, parentId?: string }[] = [];
 
+        for (const item of items) {
+            const pathParts = item.path.split('/');
+            // Remove filename
+            pathParts.pop();
 
-        // Process folder structure first
-        for (const file of fileArray) {
-            const relativePath = file.webkitRelativePath;
             let targetFolderId = currentFolderId;
 
-            if (relativePath) {
-                const parts = relativePath.split('/');
-                // Remove filename
-                parts.pop();
-                if (parts.length > 0) {
-                    const folderPath = parts.join('/');
-                    const folderId = await ensureFolder(folderPath);
-                    if (folderId) {
-                        targetFolderId = folderId === 'root' ? null : folderId;
-                    }
+            if (pathParts.length > 0) {
+                const folderPath = pathParts.join('/');
+                const folderId = await ensureFolder(folderPath);
+                if (folderId) {
+                    targetFolderId = folderId === 'root' ? null : folderId;
                 }
             }
 
-            uploadQueue.push({ file, parentId: targetFolderId || undefined });
+            uploadQueue.push({ file: item.file, parentId: targetFolderId || undefined });
         }
 
-        // Upload all files in batch
+        // Refresh once after structure is created
+        refreshFiles();
+
         await uploadFiles(uploadQueue);
+    };
+
+    const uploadFolder = async (files: FileList) => {
+        if (!user || files.length === 0) return;
+        const items = Array.from(files).map(f => ({
+            file: f,
+            path: f.webkitRelativePath || f.name
+        }));
+        await uploadWithStructure(items);
     };
 
     const deleteNode = async (id: string) => {
@@ -848,6 +778,7 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
             uploadFile,
             uploadFiles,
             uploadFolder,
+            uploadWithStructure,
             downloadFile,
             browseFolder,
             deleteNode,

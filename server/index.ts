@@ -1304,7 +1304,7 @@ app.get('/api/download/:fileId', async (req, res) => {
 
 // Download Folder as ZIP
 app.get('/api/download-folder/:folderId', async (req, res) => {
-    const userId = req.headers['x-user-id'] as string;
+    const userId = (req.headers['x-user-id'] as string) || (req.query.userId as string);
     const { folderId } = req.params;
 
     if (!userId || !folderId) {

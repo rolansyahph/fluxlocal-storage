@@ -6,6 +6,8 @@ import { Icon } from './Icon';
 import { formatDate, formatBytes } from '../utils/format';
 import { ShareModal } from './ShareModal';
 
+import { scanDroppedItems } from '../utils/file';
+
 interface DriveViewProps {
     onSelectFile: (file: FileNode) => void;
     mode?: 'my-drive' | 'shared';
@@ -15,7 +17,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
     const { user } = useAuth();
     const {
         files, currentFolderId, breadcrumbs,
-        navigate, uploadFile, uploadFiles, uploadFolder, createFolder, deleteNode, refreshFiles,
+        navigate, uploadFile, uploadFiles, uploadFolder, uploadWithStructure, createFolder, deleteNode, refreshFiles,
         clipboard, copyItems, cutItems, pasteItems,
         sharedFiles, saveSharedFiles, clearSharedFiles, downloadFile, browseFolder,
         transfers, cancelTransfer
@@ -212,26 +214,24 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
         }
     };
 
-    const handleDrop = (e: React.DragEvent) => {
+    const handleDrop = async (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
         setDragActive(false);
-        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-            // Check if any file has a path separator in its name (rare) or handle folder detection
-            // Note: webkitRelativePath is often empty on drag/drop unless using specific APIs.
-            // For now, we'll try to detect if we can use uploadFolder, but without webkitGetAsEntry it's hard to know structure on drop.
-            // However, if we assume standard file drop, we just upload files.
-            // If the user drops a folder, modern browsers might treat it as a file with 0 size or type "" or provide webkitRelativePath.
 
-            // Better approach for Drop:
-            const hasFolders = Array.from(e.dataTransfer.files).some((file: any) => file.webkitRelativePath && file.webkitRelativePath.includes('/'));
-
-            if (hasFolders) {
-                uploadFolder(e.dataTransfer.files);
-            } else {
-                const files = Array.from(e.dataTransfer.files).map(file => ({ file }));
-                uploadFiles(files);
+        // Use recursive scanning for better folder support
+        if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+            const items = await scanDroppedItems(e.dataTransfer.items);
+            if (items.length > 0) {
+                uploadWithStructure(items);
             }
+        } else if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            // Fallback
+            const files = Array.from(e.dataTransfer.files).map((file: File) => ({
+                file,
+                path: file.name
+            }));
+            uploadWithStructure(files);
         }
     };
 
