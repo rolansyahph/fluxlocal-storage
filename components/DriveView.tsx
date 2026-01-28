@@ -20,7 +20,7 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
         navigate, uploadFile, uploadFiles, uploadFolder, uploadWithStructure, createFolder, deleteNode, refreshFiles,
         clipboard, copyItems, cutItems, pasteItems,
         sharedFiles, saveSharedFiles, clearSharedFiles, downloadFile, browseFolder,
-        transfers, cancelTransfer
+        transfers, cancelTransfer, renameNode
     } = useFileSystem();
 
     const [dragActive, setDragActive] = useState(false);
@@ -144,6 +144,16 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
         }
         setSelectedIds(newSelected);
         setActiveMenuId(null); // Close menu if open
+    };
+
+    const handleRename = async (id: string, currentName: string) => {
+        const newName = prompt('Enter new name:', currentName);
+        if (newName && newName !== currentName) {
+            const success = await renameNode(id, newName);
+            if (success) {
+                setToastMessage({ type: 'success', message: 'Renamed successfully' });
+            }
+        }
     };
 
     const handleSaveToDrive = async () => {
@@ -548,6 +558,9 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
                                                 <button onClick={(e) => { e.stopPropagation(); setIsShareModalOpen(true); setSelectedIds(new Set([node.id])); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                                                     <Icon name="share-alt" className="text-gray-400" /> Share
                                                 </button>
+                                                <button onClick={(e) => { e.stopPropagation(); handleRename(node.id, node.name); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                                                    <Icon name="edit" className="text-gray-400" /> Rename
+                                                </button>
                                                 <button onClick={(e) => { e.stopPropagation(); downloadFile(node.id, node.name, node.type === 'folder'); setActiveMenuId(null); }} className="w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                                                     <Icon name="download" className="text-gray-400" /> Download
                                                 </button>
@@ -623,6 +636,13 @@ export const DriveView: React.FC<DriveViewProps> = ({ onSelectFile, mode = 'my-d
                                             className="text-gray-400 hover:text-red-500 p-1"
                                         >
                                             <Icon name="trash" />
+                                        </button>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleRename(node.id, node.name); }}
+                                            className="text-gray-400 hover:text-blue-500 p-1"
+                                            title="Rename"
+                                        >
+                                            <Icon name="edit" />
                                         </button>
                                     </div>
                                 </div>

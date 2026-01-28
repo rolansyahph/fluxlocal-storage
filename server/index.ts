@@ -682,6 +682,82 @@ app.post('/api/folder', async (req, res) => {
     }
 });
 
+// Rename File/Folder
+app.put('/api/files/:id/rename', async (req, res) => {
+    const { id } = req.params;
+    const { name } = req.body;
+    const userId = req.headers['x-user-id'] as string;
+
+    if (!userId || !name) {
+        return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const db = await getDb();
+    const file = await db.get('SELECT * FROM files WHERE id = ? AND user_id = ?', id, userId);
+
+    if (!file) {
+        return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Sanitize name
+    const safeName = name.replace(/[^a-zA-Z0-9\.\-\_\s]/g, '').trim();
+    if (!safeName) return res.status(400).json({ error: 'Invalid name' });
+
+    try {
+        const parentPath = path.dirname(file.path);
+        const newPath = path.join(parentPath, safeName);
+
+        if (file.path === newPath) {
+            return res.json({ success: true, file });
+        }
+
+        if (fs.existsSync(newPath)) {
+            return res.status(409).json({ error: 'A file with that name already exists' });
+        }
+
+        // Rename physical
+        if (fs.existsSync(file.path)) {
+            fs.renameSync(file.path, newPath);
+        }
+
+        // Update DB
+        const now = Date.now();
+        await db.run('UPDATE files SET name = ?, path = ?, created_at = ? WHERE id = ?', safeName, newPath, now, id);
+
+        // If folder, update children paths
+        if (file.type === 'folder') {
+            const oldPathWithSep = file.path + path.sep;
+            const newPathWithSep = newPath + path.sep;
+
+            await db.run(
+                `UPDATE files 
+                 SET path = ? || SUBSTR(path, LENGTH(?) + 1) 
+                 WHERE path LIKE ? || '%'`,
+                newPathWithSep, oldPathWithSep, oldPathWithSep
+            );
+        }
+
+        lastFileSystemChange = Date.now();
+
+        // Return updated file
+        const updatedFile = await db.get('SELECT * FROM files WHERE id = ?', id);
+        res.json({
+            id: updatedFile.id,
+            parentId: updatedFile.parent_id,
+            ownerId: updatedFile.user_id,
+            name: updatedFile.name,
+            type: updatedFile.type,
+            size: updatedFile.size,
+            mimeType: updatedFile.mime_type,
+            createdAt: updatedFile.created_at
+        });
+
+    } catch (error) {
+        console.error('Rename error:', error);
+        res.status(500).json({ error: 'Failed to rename' });
+    }
+});
+
 // Delete File/Folder
 app.delete('/api/files/:id', async (req, res) => {
     const { id } = req.params;

@@ -24,6 +24,7 @@ interface FileSystemContextType {
     uploadFolder: (files: FileList) => Promise<void>;
     uploadWithStructure: (items: { file: File, path: string }[]) => Promise<void>;
     deleteNode: (id: string) => Promise<void>;
+    renameNode: (id: string, newName: string) => Promise<boolean>;
     copyItems: (ids: Set<string>) => void;
     cutItems: (ids: Set<string>) => void;
     pasteItems: () => Promise<void>;
@@ -653,6 +654,31 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
         }
     };
 
+    const renameNode = async (id: string, newName: string): Promise<boolean> => {
+        if (!user) return false;
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/files/${id}/rename`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-user-id': user.id
+                },
+                body: JSON.stringify({ name: newName })
+            });
+
+            if (response.ok) {
+                fetchFiles();
+                return true;
+            } else {
+                const data = await response.json();
+                alert(data.error || 'Failed to rename');
+            }
+        } catch (error) {
+            console.error('Rename error:', error);
+        }
+        return false;
+    };
+
     const copyItems = (ids: Set<string>) => {
         setClipboard({ items: ids, operation: 'copy' });
     };
@@ -782,6 +808,7 @@ export const FileSystemProvider: React.FC<{ children: ReactNode }> = ({ children
             downloadFile,
             browseFolder,
             deleteNode,
+            renameNode,
             copyItems,
             cutItems,
             pasteItems,
